@@ -14,34 +14,50 @@ const MIRRORS = [
   "data.terabox.app"
 ];
 
-// Extract the playable URL from updated Terabox/1024tera HTML
+// Improved link extraction (new Terabox HTML as of Nov 2025)
 function extractDataLink(html) {
-  // newer Terabox structure uses playurl or dlink in JSON inside the HTML
   const patterns = [
-    /"dlink":"(https:[^"]+)"/,
-    /"playurl":"(https:[^"]+)"/,
+    /"dlink"\s*:\s*"([^"]+)"/,
+    /"playurl"\s*:\s*"([^"]+)"/,
     /https:\/\/data[^"']+\/file\/[^"']+/,
     /https:\/\/[\w-]+\.1024tera\.com\/[^"']+/,
     /https:\/\/[\w-]+\.4funbox\.com\/[^"']+/
   ];
-  for (const regex of patterns) {
-    const match = html.match(regex);
-    if (match) {
-      return decodeURIComponent(match[1].replace(/\\u002F/g, "/"));
+
+  for (const r of patterns) {
+    const m = html.match(r);
+    if (m && m[1]) {
+      let url = m[1];
+      try {
+        url = decodeURIComponent(url.replace(/\\u002F/g, "/"));
+      } catch {}
+      return url;
+    } else if (m && !m[1]) {
+      // Handle if regex doesn't have a capture group
+      return m[0];
     }
   }
+
+  // Try fallback: sometimes link is inside JSON "download link" or "url"
+  try {
+    const jsonMatch = html.match(/{"dlink":"(https:[^"]+)"/);
+    if (jsonMatch && jsonMatch[1]) return jsonMatch[1];
+  } catch {}
+
   return null;
 }
 
 app.get("/", async (req, res) => {
   const { url } = req.query;
   if (!url)
-    return res.status(400).json({ ok: false, error: "Missing ?url parameter" });
+    return res
+      .status(400)
+      .json({ ok: false, error: "Missing ?url parameter" });
 
   let target = url.trim();
 
   try {
-    // If it's a share link, fetch HTML and extract dlink
+    // Handle share links
     if (
       /terabox\.com\/s\//.test(target) ||
       /1024tera\.com\/s\//.test(target) ||
@@ -59,27 +75,27 @@ app.get("/", async (req, res) => {
         return res.json({
           ok: false,
           error:
-            "Could not extract direct file link from updated Terabox share page.",
+            "Could not extract playable link from this Terabox page (Terabox may have changed structure again).",
         });
       }
       target = dataLink;
     }
 
-    // Validate direct link
+    // Validate final link
     if (!/^https:\/\/data\./.test(target)) {
       return res.json({
         ok: false,
-        error: "Invalid or unsupported Terabox link.",
+        error: "Invalid or unsupported Terabox direct link.",
       });
     }
 
-    // Try multiple mirror domains
+    // Try mirrors
     for (const domain of MIRRORS) {
       const testUrl = target.replace(/data\.[^/]+/, domain);
       try {
         const response = await fetch(testUrl, { redirect: "manual" });
-        const type = response.headers.get("content-type") || "";
-        if (response.ok && !type.includes("json")) {
+        const contentType = response.headers.get("content-type") || "";
+        if (response.ok && !contentType.includes("json")) {
           return res.json({
             ok: true,
             video_title: decodeURIComponent(
@@ -88,22 +104,27 @@ app.get("/", async (req, res) => {
             download_url: testUrl,
           });
         }
-      } catch (e) {
-        continue; // try next domain
+      } catch {
+        // try next mirror
+        continue;
       }
     }
 
     return res.json({
       ok: false,
       error:
-        "All mirrors returned sign error or expired link. Try refreshing the page or another link.",
+        "All mirrors failed or the link has expired. Try refreshing the Terabox share link.",
     });
-  } catch (e) {
-    return res
-      .status(500)
-      .json({ ok: false, error: "Internal error: " + e.message });
+  } catch (err) {
+    console.error("Server Error:", err);
+    return res.status(500).json({
+      ok: false,
+      error: "Internal server error: " + err.message,
+    });
   }
 });
 
-app.listen(3000, () => console.log("✅ terafetchs API (Nov 2025) running..."));
+app.listen(3000, () =>
+  console.log("✅ terafetchs API (stable fix) is running...")
+);
 export default app;
