@@ -14,61 +14,96 @@ const MIRRORS = [
   "data.terabox.app"
 ];
 
+// Extract the playable URL from updated Terabox/1024tera HTML
 function extractDataLink(html) {
-  // First try official data.* link pattern
-  const regexes = [
+  // newer Terabox structure uses playurl or dlink in JSON inside the HTML
+  const patterns = [
+    /"dlink":"(https:[^"]+)"/,
+    /"playurl":"(https:[^"]+)"/,
     /https:\/\/data[^"']+\/file\/[^"']+/,
     /https:\/\/[\w-]+\.1024tera\.com\/[^"']+/,
     /https:\/\/[\w-]+\.4funbox\.com\/[^"']+/
   ];
-  for (let r of regexes) {
-    const m = html.match(r);
-    if (m) return m[0];
+  for (const regex of patterns) {
+    const match = html.match(regex);
+    if (match) {
+      return decodeURIComponent(match[1].replace(/\\u002F/g, "/"));
+    }
   }
   return null;
 }
 
 app.get("/", async (req, res) => {
   const { url } = req.query;
-  if (!url) return res.status(400).json({ ok: false, error: "Missing ?url=" });
+  if (!url)
+    return res.status(400).json({ ok: false, error: "Missing ?url parameter" });
 
   let target = url.trim();
 
   try {
-    // Handle share links
-    if (/terabox\.com\/s\//.test(target) || /1024tera\.com\/s\//.test(target)) {
-      const html = await fetch(target).then((r) => r.text());
+    // If it's a share link, fetch HTML and extract dlink
+    if (
+      /terabox\.com\/s\//.test(target) ||
+      /1024tera\.com\/s\//.test(target) ||
+      /gibibox\.com\/s\//.test(target)
+    ) {
+      const html = await fetch(target, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119 Safari/537.36",
+        },
+      }).then((r) => r.text());
+
       const dataLink = extractDataLink(html);
-      if (!dataLink)
-        return res.json({ ok: false, error: "Could not extract direct file link from share page (Terabox updated HTML)." });
+      if (!dataLink) {
+        return res.json({
+          ok: false,
+          error:
+            "Could not extract direct file link from updated Terabox share page.",
+        });
+      }
       target = dataLink;
     }
 
-    // Validate
-    if (!/https:\/\/data\./.test(target))
-      return res.json({ ok: false, error: "Invalid direct link." });
+    // Validate direct link
+    if (!/^https:\/\/data\./.test(target)) {
+      return res.json({
+        ok: false,
+        error: "Invalid or unsupported Terabox link.",
+      });
+    }
 
-    // Try mirrors for playable link
+    // Try multiple mirror domains
     for (const domain of MIRRORS) {
       const testUrl = target.replace(/data\.[^/]+/, domain);
       try {
-        const r = await fetch(testUrl, { redirect: "manual" });
-        const type = r.headers.get("content-type") || "";
-        if (r.ok && !type.includes("json")) {
+        const response = await fetch(testUrl, { redirect: "manual" });
+        const type = response.headers.get("content-type") || "";
+        if (response.ok && !type.includes("json")) {
           return res.json({
             ok: true,
-            video_title: testUrl.split("/").pop(),
-            download_url: testUrl
+            video_title: decodeURIComponent(
+              testUrl.split("/").pop().split("?")[0]
+            ),
+            download_url: testUrl,
           });
         }
-      } catch {}
+      } catch (e) {
+        continue; // try next domain
+      }
     }
 
-    return res.json({ ok: false, error: "All mirrors returned sign error or expired link." });
+    return res.json({
+      ok: false,
+      error:
+        "All mirrors returned sign error or expired link. Try refreshing the page or another link.",
+    });
   } catch (e) {
-    return res.status(500).json({ ok: false, error: e.message });
+    return res
+      .status(500)
+      .json({ ok: false, error: "Internal error: " + e.message });
   }
 });
 
-app.listen(3000, () => console.log("terafetchs fixed API running..."));
+app.listen(3000, () => console.log("✅ terafetchs API (Nov 2025) running..."));
 export default app;
