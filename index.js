@@ -6,125 +6,47 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const MIRRORS = [
-  "data.terabox.com",
-  "data.gibibox.com",
-  "data.4funbox.com",
-  "data.1024tera.com",
-  "data.terabox.app"
-];
-
-// Improved link extraction (new Terabox HTML as of Nov 2025)
-function extractDataLink(html) {
-  const patterns = [
-    /"dlink"\s*:\s*"([^"]+)"/,
-    /"playurl"\s*:\s*"([^"]+)"/,
-    /https:\/\/data[^"']+\/file\/[^"']+/,
-    /https:\/\/[\w-]+\.1024tera\.com\/[^"']+/,
-    /https:\/\/[\w-]+\.4funbox\.com\/[^"']+/
-  ];
-
-  for (const r of patterns) {
-    const m = html.match(r);
-    if (m && m[1]) {
-      let url = m[1];
-      try {
-        url = decodeURIComponent(url.replace(/\\u002F/g, "/"));
-      } catch {}
-      return url;
-    } else if (m && !m[1]) {
-      // Handle if regex doesn't have a capture group
-      return m[0];
-    }
-  }
-
-  // Try fallback: sometimes link is inside JSON "download link" or "url"
-  try {
-    const jsonMatch = html.match(/{"dlink":"(https:[^"]+)"/);
-    if (jsonMatch && jsonMatch[1]) return jsonMatch[1];
-  } catch {}
-
-  return null;
-}
+// 🚀 RapidAPI credentials
+const RAPID_KEY = process.env.RAPIDAPI_KEY; // set this in Vercel environment variables
+const RAPID_HOST = "terabox-link-api.p.rapidapi.com"; // or check RapidAPI docs if host differs
 
 app.get("/", async (req, res) => {
   const { url } = req.query;
-  if (!url)
-    return res
-      .status(400)
-      .json({ ok: false, error: "Missing ?url parameter" });
 
-  let target = url.trim();
+  if (!url)
+    return res.status(400).json({ ok: false, error: "Missing ?url parameter" });
 
   try {
-    // Handle share links
-    if (
-      /terabox\.com\/s\//.test(target) ||
-      /1024tera\.com\/s\//.test(target) ||
-      /gibibox\.com\/s\//.test(target)
-    ) {
-      const html = await fetch(target, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119 Safari/537.36",
-        },
-      }).then((r) => r.text());
+    const apiUrl = `https://${RAPID_HOST}/direct?url=${encodeURIComponent(url)}`;
 
-      const dataLink = extractDataLink(html);
-      if (!dataLink) {
-        return res.json({
-          ok: false,
-          error:
-            "Could not extract playable link from this Terabox page (Terabox may have changed structure again).",
-        });
-      }
-      target = dataLink;
-    }
+    const response = await fetch(apiUrl, {
+      headers: {
+        "x-rapidapi-key": RAPID_KEY,
+        "x-rapidapi-host": RAPID_HOST,
+      },
+    });
 
-    // Validate final link
-    if (!/^https:\/\/data\./.test(target)) {
+    const data = await response.json();
+
+    // Example success: { status:"success", direct_link:"https://...", filename:"video.mp4" }
+    if (data && data.status === "success") {
       return res.json({
-        ok: false,
-        error: "Invalid or unsupported Terabox direct link.",
+        ok: true,
+        video_title: data.filename || "Terabox Video",
+        download_url: data.direct_link,
       });
-    }
-
-    // Try mirrors
-    for (const domain of MIRRORS) {
-      const testUrl = target.replace(/data\.[^/]+/, domain);
-      try {
-        const response = await fetch(testUrl, { redirect: "manual" });
-        const contentType = response.headers.get("content-type") || "";
-        if (response.ok && !contentType.includes("json")) {
-          return res.json({
-            ok: true,
-            video_title: decodeURIComponent(
-              testUrl.split("/").pop().split("?")[0]
-            ),
-            download_url: testUrl,
-          });
-        }
-      } catch {
-        // try next mirror
-        continue;
-      }
     }
 
     return res.json({
       ok: false,
-      error:
-        "All mirrors failed or the link has expired. Try refreshing the Terabox share link.",
+      error: data.message || "Failed to fetch link from RapidAPI endpoint.",
     });
   } catch (err) {
-    console.error("Server Error:", err);
-    return res.status(500).json({
-      ok: false,
-      error: "Internal server error: " + err.message,
-    });
+    return res
+      .status(500)
+      .json({ ok: false, error: "Server error: " + err.message });
   }
 });
 
-app.listen(3000, () =>
-  console.log("✅ terafetchs API (stable fix) is running...")
-);
+app.listen(3000, () => console.log("✅ terafetchs + RapidAPI live!"));
 export default app;
